@@ -27,19 +27,48 @@ def solve() -> dict:
     imputation rule, and the DataExplorer alert-count requirement.
     """
     raw = MLFPDataLoader().load("mlfp01", "economic_indicators.csv")
+    quarterly = raw.filter(pl.col("period_type") == "quarterly")
+    quarter = (
+        pl.when(pl.col("period").str.starts_with("Q"))
+        .then(pl.col("period").str.extract(r"^Q([1-4])"))
+        .when(pl.col("period").str.contains("-Q"))
+        .then(pl.col("period").str.extract(r"-Q([1-4])"))
+        .otherwise(pl.col("period").str.extract(r"-(\d)$"))
+    )
 
-    # TODO 1: keep only period_type == "quarterly".
-    # TODO 2: parse period into period_year (Int) + period_quarter (Int, 1-4).
-    #         It appears in THREE formats: "Q1 2000", "2001-Q1", and "2001-2".
-    # TODO 3: tourist_arrivals -> Int64 (strip thousands separators like "5,246,242").
-    # TODO 4: impute inflation_rate and trade_balance_sgd_bn nulls with the
-    #         quarterly median of each column.
-    # TODO 5: select the 8 columns (see problem.md) sorted by [period_year, period_quarter].
-    # TODO 6: profile the RAW quarterly slice AND your cleaned frame with
-    #         DataExplorer; count alerts on each (await explorer.profile(df);
-    #         use len(profile.alerts)). Cleaning must REDUCE the alert count.
+    cleaned = (
+        quarterly.with_columns(
+            pl.col("period").str.extract(r"(\d{4})").cast(pl.Int64).alias("period_year"),
+            quarter.cast(pl.Int64).alias("period_quarter"),
+            pl.col("tourist_arrivals").str.replace_all(",", "").cast(pl.Int64),
+            pl.col("inflation_rate").fill_null(pl.col("inflation_rate").median()),
+            pl.col("trade_balance_sgd_bn").fill_null(pl.col("trade_balance_sgd_bn").median()),
+        )
+        .select(
+            "period_year",
+            "period_quarter",
+            "gdp_growth_pct",
+            "unemployment_rate",
+            "inflation_rate",
+            "trade_balance_sgd_bn",
+            "property_price_index",
+            "tourist_arrivals",
+        )
+        .sort(["period_year", "period_quarter"])
+    )
 
-    raise NotImplementedError("Implement solve() — see problem.md")
+    async def count_alerts() -> tuple[int, int]:
+        explorer = DataExplorer()
+        raw_profile = await explorer.profile(quarterly)
+        clean_profile = await explorer.profile(cleaned)
+        return len(raw_profile.alerts), len(clean_profile.alerts)
+
+    raw_alert_count, clean_alert_count = asyncio.run(count_alerts())
+    return {
+        "cleaned": cleaned,
+        "raw_alert_count": raw_alert_count,
+        "clean_alert_count": clean_alert_count,
+    }
 
 
 if __name__ == "__main__":
